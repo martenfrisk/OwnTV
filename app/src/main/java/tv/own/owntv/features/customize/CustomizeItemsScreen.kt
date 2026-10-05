@@ -124,10 +124,10 @@ fun CustomizeItemsScreen(
     val scope = rememberCoroutineScope()
     var listPaneFocused by remember { mutableStateOf(false) }
     var focusedItemIndex by remember { mutableIntStateOf(0) }
-    var renaming by remember { mutableStateOf<CustomizeItemRow?>(null) }
+    var renaming by remember { mutableStateOf<CustomizeItemsViewModel.RenameRequest?>(null) }
     var showFilterPicker by remember { mutableStateOf(false) }
     // The item whose Hide button was clicked to close a range — opens the Show/Hide/Cancel prompt.
-    var rangeEnd by remember { mutableStateOf<CustomizeItemRow?>(null) }
+    var rangeEnd by remember { mutableStateOf<CustomizeItemsViewModel.RangeRequest?>(null) }
     // The item the "Move to…" dialog is moving (issue #87); creatingCategory swaps the dialog for the
     // new-category name prompt.
     var movingItem by remember { mutableStateOf<CustomizeItemRow?>(null) }
@@ -258,7 +258,7 @@ fun CustomizeItemsScreen(
                         val row = items[index] ?: return@items
                         val inMoveRange = rangeAnchorKey != null && rangeMode == SpanSelector.Mode.MOVE
                         val inRenameRange = rangeAnchorKey != null && rangeMode == SpanSelector.Mode.RENAME
-                        val isInSpan = row.key in rangeSelectedKeys || renaming?.key == row.key
+                        val isInSpan = row.key in rangeSelectedKeys || renaming?.row?.key == row.key
                         ItemRow(
                             row = row,
                             about = about,
@@ -277,7 +277,7 @@ fun CustomizeItemsScreen(
                             onMoveTop = { if (inMoveRange) vm.moveRange(row, MoveKind.TOP) else vm.moveToEdge(row, top = true) },
                             onMoveBottom = { if (inMoveRange) vm.moveRange(row, MoveKind.BOTTOM) else vm.moveToEdge(row, top = false) },
                             onMoveLongPress = { dialogReturn = rowFocusers[row.key]; vm.beginMoveRange(row) },
-                            onRename = { dialogReturn = rowFocusers[row.key]; renaming = row },
+                            onRename = { dialogReturn = rowFocusers[row.key]; renaming = vm.renameRequest(row) },
                             onRenameLongPress = { dialogReturn = rowFocusers[row.key]; vm.beginRenameRange(row) },
                             onPickRenameEnd = {
                                 if (row.key == rangeAnchorKey) {
@@ -285,19 +285,21 @@ fun CustomizeItemsScreen(
                                 } else {
                                     dialogReturn = rowFocusers[row.key]
                                     // No active span (anchor vanished?) — fall back to the single rename.
-                                    if (vm.finishRenameRange(row) == null) renaming = row
+                                    if (vm.finishRenameRange(row) == null) renaming = vm.renameRequest(row)
                                 }
                             },
                             onSplit = { dialogReturn = rowFocusers[row.key]; splitting = vm.splitRequest(row) },
                             onMove = { dialogReturn = rowFocusers[row.key]; movingItem = row },
                             onRemoveFromCategory = if (catInfo?.isCustom == true) ({ vm.removeFromCategory(row) }) else null,
+                            onToggleFavorite = { vm.setFavorite(row, !row.favorite) },
+                            onReset = { vm.resetItem(row) },
                             onToggleHidden = { vm.setItemHidden(row, !row.hidden) },
                             onHideLongPress = { dialogReturn = rowFocusers[row.key]; vm.beginRange(row) },
                             onPickRangeEnd = {
                                 if (row.key == rangeAnchorKey) vm.cancelRange()
                                 else {
                                     dialogReturn = rowFocusers[row.key]
-                                    rangeEnd = row
+                                    rangeEnd = vm.rangeRequest(row)
                                 }
                             },
                         )
@@ -326,22 +328,27 @@ fun CustomizeItemsScreen(
         )
     }
 
-    renaming?.let { row ->
+    renaming?.let { request ->
+        val row = request.row
         TextInputDialog(
-            title = stringResource(R.string.content_rename_channel),
+            title = stringResource(R.string.group_rename_item),
             initial = row.displayName,
             hint = stringResource(R.string.settings_customize_rename_item_hint, row.originalName),
-            onConfirm = { vm.renameItem(row, it.takeIf { t -> t.isNotBlank() }); renaming = null },
+            onConfirm = { vm.renameItem(request, it.takeIf { t -> t.isNotBlank() }); renaming = null },
             onDismiss = { renaming = null },
         )
     }
 
-    rangeEnd?.let { row ->
-        val count = vm.keysInRange(row)?.size ?: 0
-        ItemsRangeHideDialog(
-            count = count,
-            onHide = { vm.applyRange(row, hidden = true); rangeEnd = null },
-            onShow = { vm.applyRange(row, hidden = false); rangeEnd = null },
+    rangeEnd?.let { request ->
+        GroupItemSelectionDialog(request.rows.size,
+            onSelect = { action ->
+                when (action) {
+                    GroupItemSelectionAction.HIDE -> vm.applyRange(request, hidden = true)
+                    GroupItemSelectionAction.UNHIDE -> vm.applyRange(request, hidden = false)
+                    else -> tv.own.owntv.core.customize.GroupItemAction.entries.firstOrNull { it.name == action.name }?.let { vm.applyItemRange(request, it) }
+                }
+                rangeEnd = null
+            },
             onDismiss = { vm.cancelRange(); rangeEnd = null },
         )
     }
@@ -384,26 +391,6 @@ fun CustomizeItemsScreen(
     } // CompositionLocalProvider
 }
 
-/** Confirms a range select over ITEMS: hide or show every item in the chosen span (or cancel). */
-@Composable
-private fun ItemsRangeHideDialog(count: Int, onHide: () -> Unit, onShow: () -> Unit, onDismiss: () -> Unit) {
-    val colors = OwnTVTheme.colors
-    val hideFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { hideFocus.requestFocus() } }
-    BackHandler { onDismiss() }
-    tv.own.owntv.ui.stage.StagePopup(
-        onDismiss = onDismiss,
-        title = stringResource(R.string.settings_customize_hide_show_items),
-        body = pluralStringResource(R.plurals.settings_customize_selected_items, count, count),
-        width = 864.mpx,
-        buttons = {
-            OwnTVButton(stringResource(R.string.common_cancel), onClick = onDismiss, style = OwnTVButtonStyle.SECONDARY)
-            OwnTVButton(stringResource(R.string.common_show), onClick = onShow, style = OwnTVButtonStyle.SECONDARY)
-            OwnTVButton(stringResource(R.string.common_hide), onClick = onHide, modifier = Modifier.focusRequester(hideFocus))
-        },
-    )
-}
-
 @Composable
 private fun ItemRow(
     row: CustomizeItemRow,
@@ -431,6 +418,8 @@ private fun ItemRow(
     onMove: () -> Unit,
     // Only in a custom category: take the item out of it alone.
     onRemoveFromCategory: (() -> Unit)?,
+    onToggleFavorite: () -> Unit,
+    onReset: () -> Unit,
     onToggleHidden: () -> Unit,
     onHideLongPress: () -> Unit,
     onPickRangeEnd: () -> Unit,
@@ -445,8 +434,9 @@ private fun ItemRow(
         StageAction(OwnTVIcon.CHEVRON_UP, stringResource(R.string.settings_row_menu_move_up), onMoveUp, onMoveLongPress),
         StageAction(OwnTVIcon.CHEVRON_DOWN, stringResource(R.string.settings_row_menu_move_down), onMoveDown, onMoveLongPress),
         StageAction(OwnTVIcon.PAGE_TOWARD_LAST, stringResource(R.string.settings_customize_move_bottom), onMoveBottom, onMoveLongPress),
-        // Live TV channels get a per-row Rename; Movies/Series rename the whole category from the tool row.
-        if (isLive) StageAction(OwnTVIcon.PENCIL, stringResource(R.string.settings_customize_rename), { if (inRenameRange) onPickRenameEnd() else onRename() }, onRenameLongPress) else null,
+        StageAction(OwnTVIcon.PENCIL, stringResource(R.string.settings_customize_rename), { if (inRenameRange) onPickRenameEnd() else onRename() }, onRenameLongPress),
+        StageAction(OwnTVIcon.FAVORITE, stringResource(if (row.favorite) R.string.group_remove_favorite else R.string.content_favorite), onToggleFavorite),
+        StageAction(OwnTVIcon.REFRESH, stringResource(R.string.group_reset_item_overrides), onReset),
         StageAction(OwnTVIcon.FOLDER, stringResource(R.string.settings_customize_move_to), onMove),
         StageAction(OwnTVIcon.FOLDER, stringResource(R.string.group_split), onSplit, onMoveLongPress),
         onRemoveFromCategory?.let { StageAction(OwnTVIcon.CLOSE, stringResource(R.string.content_remove_from_category), it) },

@@ -43,6 +43,8 @@ import tv.own.owntv.core.customize.CustomizationStore
 import tv.own.owntv.core.customize.CustomizeKeys
 import tv.own.owntv.core.customize.GroupDefinitionEdit
 import tv.own.owntv.core.customize.GroupDefinitionAction
+import tv.own.owntv.core.customize.GroupItemEdit
+import tv.own.owntv.core.customize.GroupItemAction
 import tv.own.owntv.core.customize.GroupScope
 import tv.own.owntv.core.customize.GroupAction
 import tv.own.owntv.core.customize.GroupCompositionEdit
@@ -62,6 +64,7 @@ data class CustomizeItemRow(
     val displayName: String,
     val hidden: Boolean,
     val renamed: Boolean,
+    val favorite: Boolean = false,
 )
 
 /**
@@ -77,7 +80,7 @@ class CustomizeItemsViewModel(
     private val contentOrderDao: ContentOrderDao,
     private val customCategoryDao: CustomCategoryDao,
     private val customize: CustomizationStore,
-    private val userDataWriter: tv.own.owntv.core.backup.UserDataWriter,
+    private val favoriteDao: tv.own.owntv.core.database.dao.FavoriteDao,
     private val groups: tv.own.owntv.core.customize.GroupService,
 ) : ViewModel() {
 
@@ -143,17 +146,24 @@ class CustomizeItemsViewModel(
         else cust.categoryNames[ci.contextKey] ?: "" // will be set from outside (the row's displayName)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
 
+    private val favoriteIds: StateFlow<Set<Long>> = combine(ctx, _catInfo) { c, ci -> c to ci }
+        .flatMapLatest { (c, ci) ->
+            if (c.profileId < 0 || ci == null) flowOf(emptySet())
+            else favoriteDao.observeFavoriteIds(c.profileId, ci.mediaType).map { it.toSet() }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
     /** Paged items in this category, with customizations applied (display names, hidden state). */
-    private val allItems: Flow<PagingData<CustomizeItemRow>> = combine(_catInfo, hasOrder, customizeForItems) { ci, ordered, cust ->
-        Triple(ci, ordered, cust)
-    }.flatMapLatest { (ci, ordered, cust) ->
+    private val allItems: Flow<PagingData<CustomizeItemRow>> = combine(_catInfo, hasOrder, customizeForItems, favoriteIds) { ci, ordered, cust, favorites ->
+        Triple(ci, ordered, cust to favorites)
+    }.flatMapLatest { (ci, ordered, state) ->
+        val (cust, favorites) = state
         if (ci == null) flowOf(PagingData.empty())
         else {
             Pager(PagingConfig(pageSize = 60)) { pagingSource(ci.categoryId, ci, ordered) }
                 .flow
                 .map { pagingData ->
                     pagingData.map { entity ->
-                        mapToRow(entity, ci.mediaType, cust)
+                        mapToRow(entity, ci.mediaType, cust).let { it.copy(favorite = it.itemId in favorites) }
                     }
                 }
         }
@@ -192,19 +202,21 @@ class CustomizeItemsViewModel(
     fun cancelRange() = span.cancel()
     fun keysInRange(endRow: CustomizeItemRow): List<String>? = span.keysInRange(endRow)
 
-    /** Hide/show every item in the span in ONE atomic customization edit. */
-    fun applyRange(endRow: CustomizeItemRow, hidden: Boolean) {
-        val keys = span.keysInRange(endRow) ?: return
-        val ci = _catInfo.value ?: return
-        val scope = ctx.value
-        val itemIds = loadedRows.value.filter { it.key in keys }.map { it.itemId }
-        viewModelScope.launch {
-            groups.editFromTv(tv.own.owntv.core.customize.GroupEdit(
-                tv.own.owntv.core.customize.GroupScope(scope.profileId, ci.mediaType, scope.sourceIdsFor(ci.mediaType).toSet()),
-                if (hidden) tv.own.owntv.core.customize.GroupAction.HIDE else tv.own.owntv.core.customize.GroupAction.UNHIDE,
-                itemIds,
-            ))
-        }
+    data class RangeRequest(val scope: GroupScope, val rows: List<CustomizeItemRow>)
+
+    fun rangeRequest(endRow: CustomizeItemRow): RangeRequest? {
+        val ci = _catInfo.value ?: return null
+        val keys = span.keysInRange(endRow) ?: return null
+        val byKey = loadedRows.value.associateBy { it.key }
+        val rows = keys.map { byKey[it] ?: return null }
+        return RangeRequest(GroupScope(ctx.value.profileId, ci.mediaType, ci.sourceIds.toSet()), rows)
+    }
+
+    fun applyRange(request: RangeRequest, hidden: Boolean) {
+        val command = tv.own.owntv.core.customize.GroupEdit(request.scope,
+            if (hidden) GroupAction.HIDE else GroupAction.UNHIDE, request.rows.map { it.itemId },
+            itemKeys = request.rows.associate { it.itemId to it.key })
+        viewModelScope.launch { groups.editFromTv(command) }
         span.cancel()
     }
 
@@ -390,91 +402,94 @@ class CustomizeItemsViewModel(
             groups.editFromTv(tv.own.owntv.core.customize.GroupEdit(
                 tv.own.owntv.core.customize.GroupScope(scope.profileId, ci.mediaType, scope.sourceIdsFor(ci.mediaType).toSet()),
                 if (hidden) tv.own.owntv.core.customize.GroupAction.HIDE else tv.own.owntv.core.customize.GroupAction.UNHIDE,
-                listOf(row.itemId),
+                listOf(row.itemId), itemKeys = mapOf(row.itemId to row.key),
             ))
         }
     }
 
-    /** Rename an item (Live TV channels only — Movies/Series use bulk rename in Phase 2). */
-    fun renameItem(row: CustomizeItemRow, name: String?) {
-        val ci = _catInfo.value ?: return
+    data class RenameRequest(val scope: GroupScope, val row: CustomizeItemRow)
+
+    fun renameRequest(row: CustomizeItemRow): RenameRequest? {
+        val ci = _catInfo.value ?: return null
+        val current = ctx.value
+        return RenameRequest(GroupScope(current.profileId, ci.mediaType, ci.sourceIds.toSet()), row)
+    }
+
+    fun renameItem(request: RenameRequest, name: String?) {
         viewModelScope.launch {
-            customize.renameItem(ctx.value.profileId, ci.mediaType, row.key, name)
+            groups.editItemsFromTv(GroupItemEdit(request.scope, GroupItemAction.RENAME,
+                listOf(request.row.itemId), mapOf(request.row.itemId to name), itemKeys = mapOf(request.row.itemId to request.row.key)))
         }
     }
 
-    // --- bulk rename (issue #86) ---
-
-    /**
-     * One-shot bulk-rename flow for the current category's items. Every accepted rename lands in ONE
-     * [CustomizationStore] write; restore clears only the selected keys' entries.
-     */
-    val bulk = BulkRenameSession(
-        scope = viewModelScope,
-        persist = { renames ->
-            val ci = _catInfo.value
-            if (ci != null) customize.applyBulkRenames(ctx.value.profileId, ci.mediaType, renames)
-        },
-        restore = { keys ->
-            val ci = _catInfo.value
-            if (ci != null) customize.clearItemNames(ctx.value.profileId, ci.mediaType, keys)
-        },
-        existingNames = { selectedKeys ->
-            val ci = _catInfo.value
-            val pid = ctx.value.profileId
-            if (ci == null || pid < 0) emptySet<String>()
-            else customize.observe(pid, ci.mediaType).first().itemNames
-                .filterKeys { it !in selectedKeys }
-                .values.toSet() + loadedRows.value.filter { it.key !in selectedKeys }.map { it.originalName }
-        },
+    fun setFavorite(row: CustomizeItemRow, favorite: Boolean) = editItemSelection(
+        listOf(row), if (favorite) GroupItemAction.FAVORITE else GroupItemAction.UNFAVORITE,
     )
+
+    fun resetItem(row: CustomizeItemRow) = editItemSelection(listOf(row), GroupItemAction.RESET)
+
+    fun applyItemRange(request: RangeRequest, action: GroupItemAction) {
+        val command = GroupItemEdit(request.scope, action, request.rows.map { it.itemId },
+            itemKeys = request.rows.associate { it.itemId to it.key })
+        viewModelScope.launch { groups.editItemsFromTv(command) }
+        span.cancel()
+    }
+
+    private fun editItemSelection(rows: List<CustomizeItemRow>, action: GroupItemAction) {
+        val ci = _catInfo.value ?: return
+        val command = GroupItemEdit(GroupScope(ctx.value.profileId, ci.mediaType, ci.sourceIds.toSet()), action, rows.map { it.itemId }, itemKeys = rows.associate { it.itemId to it.key })
+        viewModelScope.launch { groups.editItemsFromTv(command) }
+    }
+
+    // Each editor captures its selection and profile before any background review starts.
+    val bulk = BulkRenameSession(viewModelScope, {}, {}, { emptySet() })
+
+    private fun startItemRename(ci: CatInfo, scope: GroupScope, rows: List<CustomizeItemRow>, autocleanup: Boolean = false) {
+        val byKey = rows.associateBy { it.key }
+        val originals = rows.associate { it.key to it.originalName }
+        suspend fun rename(names: Map<String, String?>) {
+            val changes = names.mapKeys { (key, _) -> byKey.getValue(key).itemId }
+            groups.editItemsFromTv(GroupItemEdit(scope, GroupItemAction.RENAME, changes.keys.toList(), changes, itemKeys = names.keys.associate { byKey.getValue(it).itemId to it }))
+        }
+        bulk.start(rows.map { it.key to it.originalName },
+            persistOverride = { rename(it) }, restoreOverride = { rename(it.associateWith { null }) },
+            existingNamesOverride = { keys -> customize.observe(scope.profileId, ci.mediaType).first().itemNames
+                .filterKeys { it !in keys }.values.toSet() + originals.filterKeys { it !in keys }.values })
+        if (autocleanup && bulk.screen.value == BulkRenameSession.Screen.CHOICE) bulk.autoCleanup()
+    }
 
     fun beginRenameRange(row: CustomizeItemRow) = span.beginRenameRange(row.key)
 
-    /**
-     * Ends the RENAME span at [endRow] and opens the bulk flow over the spanned rows' ORIGINAL
-     * names. Returns null when no span is active — the caller then opens the single-row rename.
-     */
     fun finishRenameRange(endRow: CustomizeItemRow): List<String>? {
+        val ci = _catInfo.value ?: return null
+        val scope = GroupScope(ctx.value.profileId, ci.mediaType, ci.sourceIds.toSet())
         val keys = span.finishRenameRange(endRow.key) ?: return null
         val byKey = loadedRows.value.associateBy { it.key }
-        bulk.start(keys.mapNotNull { byKey[it]?.let { row -> row.key to row.originalName } })
+        startItemRename(ci, scope, keys.mapNotNull { byKey[it] })
         return keys
     }
 
-    /**
-     * Bulk-renames the WHOLE category — the ✎ Rename items / ✨ Auto cleanup pills (Movies/Series).
-     * Snapshots every provider name in the category (manual-order aware, same DAO path as moves) and
-     * opens the flow; with [autocleanup] the preset rules are applied straight away.
-     */
+    /** Read one row beyond the TV review limit so an oversized category is explicitly refused. */
     fun bulkRenameAll(autocleanup: Boolean) {
         val ci = _catInfo.value ?: return
-        val pid = ctx.value.profileId
-        if (pid < 0) return
+        val scope = GroupScope(ctx.value.profileId, ci.mediaType, ci.sourceIds.toSet())
+        if (scope.profileId < 0) return
         viewModelScope.launch {
-            val entries: List<Pair<String, String>> = when {
-                ci.isCustom -> when (ci.mediaType) {
-                    MediaType.LIVE -> customCategoryDao.snapshotChannels(pid, ci.contextKey, ci.sourceIds, SNAPSHOT_LIMIT)
-                        .map { CustomizeKeys.channel(it) to it.name }
-                    MediaType.MOVIE -> customCategoryDao.snapshotMovies(pid, ci.contextKey, ci.sourceIds, SNAPSHOT_LIMIT)
-                        .map { CustomizeKeys.movie(it) to it.name }
-                    MediaType.SERIES -> customCategoryDao.snapshotSeries(pid, ci.contextKey, ci.sourceIds, SNAPSHOT_LIMIT)
-                        .map { CustomizeKeys.series(it) to it.name }
-                    MediaType.EPISODE -> return@launch
-                }
-                else -> when (ci.mediaType) {
-                    MediaType.LIVE -> channelDao.snapshotByCategoryManual(ci.categoryId!!, pid, ci.contextKey, SNAPSHOT_LIMIT)
-                        .map { CustomizeKeys.channel(it) to it.name }
-                    MediaType.MOVIE -> movieDao.snapshotByCategoryManual(ci.categoryId!!, pid, ci.contextKey, SNAPSHOT_LIMIT)
-                        .map { CustomizeKeys.movie(it) to it.name }
-                    MediaType.SERIES -> seriesDao.snapshotByCategoryManual(ci.categoryId!!, pid, ci.contextKey, SNAPSHOT_LIMIT)
-                        .map { CustomizeKeys.series(it) to it.name }
-                    MediaType.EPISODE -> return@launch
-                }
+            val limit = tv.own.owntv.core.customize.BULK_RENAME_MAX_ROWS + 1
+            val entities: List<Any> = if (ci.isCustom) when (ci.mediaType) {
+                MediaType.LIVE -> customCategoryDao.snapshotChannels(scope.profileId, ci.contextKey, ci.sourceIds, limit)
+                MediaType.MOVIE -> customCategoryDao.snapshotMovies(scope.profileId, ci.contextKey, ci.sourceIds, limit)
+                MediaType.SERIES -> customCategoryDao.snapshotSeries(scope.profileId, ci.contextKey, ci.sourceIds, limit)
+                MediaType.EPISODE -> return@launch
+            } else when (ci.mediaType) {
+                MediaType.LIVE -> channelDao.snapshotByCategoryManual(ci.categoryId!!, scope.profileId, ci.contextKey, limit)
+                MediaType.MOVIE -> movieDao.snapshotByCategoryManual(ci.categoryId!!, scope.profileId, ci.contextKey, limit)
+                MediaType.SERIES -> seriesDao.snapshotByCategoryManual(ci.categoryId!!, scope.profileId, ci.contextKey, limit)
+                MediaType.EPISODE -> return@launch
             }
-            if (entries.isEmpty()) return@launch
-            bulk.start(entries)
-            if (autocleanup) bulk.autoCleanup()
+            if (entities.isEmpty()) return@launch
+            val cust = customize.observe(scope.profileId, ci.mediaType).first()
+            startItemRename(ci, scope, entities.map { mapToRow(it, ci.mediaType, cust) }, autocleanup)
         }
     }
 
