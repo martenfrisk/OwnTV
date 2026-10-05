@@ -70,6 +70,7 @@ class CustomizeItemsViewModel(
     private val customCategoryDao: CustomCategoryDao,
     private val customize: CustomizationStore,
     private val userDataWriter: tv.own.owntv.core.backup.UserDataWriter,
+    private val groups: tv.own.owntv.core.customize.GroupService,
 ) : ViewModel() {
 
     private data class Ctx(val profileId: Long, val sources: List<tv.own.owntv.core.database.entity.SourceEntity>) {
@@ -187,9 +188,14 @@ class CustomizeItemsViewModel(
     fun applyRange(endRow: CustomizeItemRow, hidden: Boolean) {
         val keys = span.keysInRange(endRow) ?: return
         val ci = _catInfo.value ?: return
+        val scope = ctx.value
+        val itemIds = loadedRows.value.filter { it.key in keys }.map { it.itemId }
         viewModelScope.launch {
-            val labels = loadedRows.value.filter { it.key in keys }.associate { it.key to it.originalName }
-            customize.setItemsHidden(ctx.value.profileId, ci.mediaType, labels, hidden)
+            groups.editFromTv(tv.own.owntv.core.customize.GroupEdit(
+                tv.own.owntv.core.customize.GroupScope(scope.profileId, ci.mediaType, scope.sourceIdsFor(ci.mediaType).toSet()),
+                if (hidden) tv.own.owntv.core.customize.GroupAction.HIDE else tv.own.owntv.core.customize.GroupAction.UNHIDE,
+                itemIds,
+            ))
         }
         span.cancel()
     }
@@ -371,8 +377,13 @@ class CustomizeItemsViewModel(
 
     fun setItemHidden(row: CustomizeItemRow, hidden: Boolean) {
         val ci = _catInfo.value ?: return
+        val scope = ctx.value
         viewModelScope.launch {
-            customize.setItemHidden(ctx.value.profileId, ci.mediaType, row.key, row.originalName, hidden)
+            groups.editFromTv(tv.own.owntv.core.customize.GroupEdit(
+                tv.own.owntv.core.customize.GroupScope(scope.profileId, ci.mediaType, scope.sourceIdsFor(ci.mediaType).toSet()),
+                if (hidden) tv.own.owntv.core.customize.GroupAction.HIDE else tv.own.owntv.core.customize.GroupAction.UNHIDE,
+                listOf(row.itemId),
+            ))
         }
     }
 
@@ -491,8 +502,9 @@ class CustomizeItemsViewModel(
     /** Creates a custom category (issue #87) — the Move dialog's "＋ New category…" flow. */
     fun createCustomCategory(name: String) {
         val ci = _catInfo.value ?: return
+        val pid = ctx.value.profileId
         viewModelScope.launch {
-            customize.createCustomCategory(ctx.value.profileId, ci.mediaType, name)
+            groups.withStableCatalog(changed = true) { customize.createCustomCategory(pid, ci.mediaType, name) }
         }
     }
 
@@ -506,33 +518,25 @@ class CustomizeItemsViewModel(
      *  provider folder into here, it goes back there — the same as deleting the whole category does. */
     fun removeFromCategory(row: CustomizeItemRow) {
         val ci = _catInfo.value?.takeIf { it.isCustom } ?: return
+        val scope = ctx.value
         viewModelScope.launch {
-            val pid = ctx.value.profileId
-            userDataWriter.removeCustomCategoryMember(pid, ci.mediaType, ci.contextKey, row.itemId)
-            customize.observe(pid, ci.mediaType).first().movedFromOrigin[row.key]?.let { origin ->
-                customize.setItemMovedFromOrigin(pid, ci.mediaType, row.key, origin, moved = false)
-            }
+            groups.editFromTv(tv.own.owntv.core.customize.GroupEdit(
+                scope = tv.own.owntv.core.customize.GroupScope(scope.profileId, ci.mediaType, scope.sourceIdsFor(ci.mediaType).toSet()),
+                action = tv.own.owntv.core.customize.GroupAction.REMOVE,
+                itemIds = listOf(row.itemId), origin = ci.contextKey, restoreProviderOnRemove = true,
+            ))
         }
     }
 
     fun moveTo(row: CustomizeItemRow, targetId: String, keepInOrigin: Boolean) {
         val ci = _catInfo.value ?: return
-        if (targetId == ci.contextKey) return
+        val scope = ctx.value
         viewModelScope.launch {
-            val pid = ctx.value.profileId
-            customCategoryDao.appendItem(pid, ci.mediaType, targetId, row.itemId)
-            if (!keepInOrigin) {
-                when {
-                    // Custom origin → drop the membership row (the item leaves THIS category).
-                    // Through the writer, so the removal is recorded and a sync cannot bring it back.
-                    CustomizeKeys.isCustom(ci.contextKey) ->
-                        userDataWriter.removeCustomCategoryMember(pid, ci.mediaType, ci.contextKey, row.itemId)
-                    // Provider-folder origin → mark it moved-out; the browse pager then drops the
-                    // item from that folder while keeping it in All/search/recent. (Favorites can't
-                    // be an origin here — this screen is only opened from Customize's category rows.)
-                    else -> customize.setItemMovedFromOrigin(pid, ci.mediaType, row.key, ci.contextKey, moved = true)
-                }
-            }
+            groups.editFromTv(tv.own.owntv.core.customize.GroupEdit(
+                scope = tv.own.owntv.core.customize.GroupScope(scope.profileId, ci.mediaType, scope.sourceIdsFor(ci.mediaType).toSet()),
+                action = if (keepInOrigin) tv.own.owntv.core.customize.GroupAction.COPY else tv.own.owntv.core.customize.GroupAction.MOVE,
+                itemIds = listOf(row.itemId), target = targetId, origin = ci.contextKey,
+            ))
         }
     }
 }

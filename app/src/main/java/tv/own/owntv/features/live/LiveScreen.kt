@@ -1096,13 +1096,13 @@ fun LiveScreen(
     } else {
         moveItem?.let { ch ->
             val originKey = moveOriginKey
-            if (originKey != null) {
+            run {
                 MoveToCategoryDialog(
                     moveTargets = moveTargets.filterNot { it.id == originKey },
                     originName = moveOriginName ?: stringResource(R.string.settings_customize_this_category),
                     onNewCategory = { creatingCategory = true },
                     onMove = { targetId, keepInOrigin ->
-                        vm.moveToCategory(CustomizeKeys.channel(ch), ch.id, originKey, targetId, keepInOrigin)
+                        vm.moveToCategory(ch.id, originKey, targetId, keepInOrigin)
                         moveItem = null
                     },
                     onDismiss = { moveItem = null },

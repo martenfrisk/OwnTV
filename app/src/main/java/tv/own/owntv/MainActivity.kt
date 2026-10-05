@@ -12,6 +12,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import androidx.activity.compose.setContent
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.background
@@ -474,6 +476,9 @@ open class MainActivity : ComponentActivity() {
                             // frame is safer than rendering protected content if a new state is added.
                             else -> Unit
                         }
+                        tv.own.owntv.features.customize.GroupOperationStatus(
+                            modifier = Modifier.align(androidx.compose.ui.Alignment.TopEnd).padding(24.dp),
+                        )
                         } // end foreground Box (above the background layer)
                     }
                     } // end LocalizedContent

@@ -90,10 +90,37 @@ val appModule = module {
             get(),
             get(),
             get(),
+            get(),
         )
     }
     viewModelOf(::MovieViewModel)
-    viewModelOf(::SeriesViewModel)
+    viewModel {
+        SeriesViewModel(
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+        )
+    }
     viewModelOf(::SearchViewModel)
     viewModelOf(::ProfilesViewModel)
     // Activity-scoped session state for the profile gate (configuration-only retention, no saved

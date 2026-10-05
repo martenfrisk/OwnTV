@@ -99,6 +99,7 @@ class MovieViewModel(
     private val externalPlayerLauncher: tv.own.owntv.core.player.ExternalPlayerLauncher,
     private val streamUrlResolver: tv.own.owntv.core.stalker.StreamUrlResolver,
     private val subtitleController: tv.own.owntv.core.subtitles.SubtitleController,
+    private val groups: tv.own.owntv.core.customize.GroupService,
 ) : ViewModel() {
 
     /** The categories' search text, held here so it survives the player (see LiveViewModel). */
@@ -183,9 +184,10 @@ class MovieViewModel(
 
     /** Creates a custom category (issue #87) — the Move dialog's "＋ New category…" flow. */
     fun createCustomCategory(name: String) {
+        val pid = ctx.value.profileId
+        if (pid < 0) return
         viewModelScope.launch {
-            val pid = currentProfileId() ?: return@launch
-            customize.createCustomCategory(pid, MediaType.MOVIE, name)
+            groups.withStableCatalog(changed = true) { customize.createCustomCategory(pid, MediaType.MOVIE, name) }
         }
     }
 
@@ -196,18 +198,16 @@ class MovieViewModel(
      * folder is marked in movedFromOrigin — the pager chain then drops it from that folder while
      * keeping it in All / search / recent.
      */
-    fun moveToCategory(itemKey: String, itemId: Long, originKey: String, targetId: String, keepInOrigin: Boolean) {
-        if (targetId == originKey) return
+    fun moveToCategory(itemId: Long, originKey: String?, targetId: String, keepInOrigin: Boolean) {
+        val scope = ctx.value
+        if (scope.profileId < 0) return
         viewModelScope.launch {
-            val pid = currentProfileId() ?: return@launch
-            customCategoryDao.appendItem(pid, MediaType.MOVIE, targetId, itemId)
-            if (!keepInOrigin) {
-                when {
-                    originKey == ContentOrderEntity.FAV_CONTEXT -> userDataWriter.removeFavorite(pid, MediaType.MOVIE, itemId)
-                    CustomizeKeys.isCustom(originKey) -> userDataWriter.removeCustomCategoryMember(pid, MediaType.MOVIE, originKey, itemId)
-                    else -> customize.setItemMovedFromOrigin(pid, MediaType.MOVIE, itemKey, originKey, moved = true)
-                }
-            }
+            groups.editFromTv(tv.own.owntv.core.customize.GroupEdit(
+                scope = tv.own.owntv.core.customize.GroupScope(scope.profileId, MediaType.MOVIE, scope.sourceIds.toSet()),
+                action = if (keepInOrigin) tv.own.owntv.core.customize.GroupAction.COPY else tv.own.owntv.core.customize.GroupAction.MOVE,
+                itemIds = listOf(itemId), target = targetId, origin = originKey,
+                removeFromFavorites = !keepInOrigin && originKey == ContentOrderEntity.FAV_CONTEXT,
+            ))
         }
     }
 
@@ -975,9 +975,13 @@ class MovieViewModel(
     /** Hide the movie from all lists (undo via Settings → Customize Category → Hidden items). */
     fun hideMovie(movie: MovieEntity) {
         if (_selectedMovie.value?.id == movie.id) _selectedMovie.value = null
+        val scope = ctx.value
+        if (scope.profileId < 0) return
         viewModelScope.launch {
-            val pid = currentProfileId() ?: return@launch
-            customize.setItemHidden(pid, MediaType.MOVIE, CustomizeKeys.movie(movie), movie.name, true)
+            groups.editFromTv(tv.own.owntv.core.customize.GroupEdit(
+                tv.own.owntv.core.customize.GroupScope(scope.profileId, MediaType.MOVIE, scope.sourceIds.toSet()),
+                tv.own.owntv.core.customize.GroupAction.HIDE, listOf(movie.id),
+            ))
         }
     }
 

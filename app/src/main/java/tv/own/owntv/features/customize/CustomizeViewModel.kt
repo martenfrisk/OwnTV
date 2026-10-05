@@ -71,6 +71,7 @@ class CustomizeViewModel(
     private val customCategoryDao: CustomCategoryDao,
     private val contentOrderDao: ContentOrderDao,
     private val customize: CustomizationStore,
+    private val groups: tv.own.owntv.core.customize.GroupService,
 ) : ViewModel() {
 
     /** Moves serialize so a fast second press snapshots the result of the first, never the stale
@@ -265,8 +266,9 @@ class CustomizeViewModel(
     fun createCustomCategory(name: String) {
         val pid = ctx.value.profileId
         if (pid < 0) return
+        val type = _section.value
         viewModelScope.launch {
-            customize.createCustomCategory(pid, _section.value, name)
+            groups.withStableCatalog(changed = true) { customize.createCustomCategory(pid, type, name) }
         }
     }
 
@@ -278,17 +280,19 @@ class CustomizeViewModel(
     fun deleteCustomCategory(row: CustomizeCatRow) {
         val pid = ctx.value.profileId
         if (pid < 0 || !CustomizeKeys.isCustom(row.key)) return
+        val type = _section.value
         viewModelScope.launch {
-            val type = _section.value
-            // Capture stable member keys first so deleting a destination restores any provider
-            // origins those items left when they were moved here.
-            val formerMemberKeys = customCategoryDao.stableItemKeys(pid, row.key).toSet()
-            // 1) Room: drop the category's membership + its content_order rows (the category's own
-            //    rail-order rows ride the same contextKey as the browse screens' reorder).
-            customCategoryDao.clearContext(pid, type, row.key)
-            contentOrderDao.clearContext(pid, type, row.key)
-            // 2) DataStore: remove the definition + any hide/rename pins on it.
-            customize.deleteCustomCategory(pid, type, row.key, formerMemberKeys)
+            groups.withStableCatalog(changed = true) {
+                // Capture stable member keys first so deleting a destination restores any provider
+                // origins those items left when they were moved here.
+                val formerMemberKeys = customCategoryDao.stableItemKeys(pid, row.key).toSet()
+                // 1) Room: drop the category's membership + its content_order rows (the category's own
+                //    rail-order rows ride the same contextKey as the browse screens' reorder).
+                customCategoryDao.clearContext(pid, type, row.key)
+                contentOrderDao.clearContext(pid, type, row.key)
+                // 2) DataStore: remove the definition + any hide/rename pins on it.
+                customize.deleteCustomCategory(pid, type, row.key, formerMemberKeys)
+            }
         }
     }
 

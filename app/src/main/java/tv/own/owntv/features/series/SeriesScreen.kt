@@ -963,13 +963,13 @@ private fun SeriesGrid(
     } else {
         moveItem?.let { s ->
             val originKey = moveOriginKey
-            if (originKey != null) {
+            run {
                 MoveToCategoryDialog(
                     moveTargets = moveTargets.filterNot { it.id == originKey },
                     originName = moveOriginName ?: stringResource(R.string.settings_customize_this_category),
                     onNewCategory = { creatingCategory = true },
                     onMove = { targetId, keepInOrigin ->
-                        vm.moveToCategory(CustomizeKeys.series(s), s.id, originKey, targetId, keepInOrigin)
+                        vm.moveToCategory(s.id, originKey, targetId, keepInOrigin)
                         moveItem = null
                     },
                     onDismiss = { moveItem = null },

@@ -991,13 +991,13 @@ fun MoviesScreen(
     } else {
         moveItem?.let { m ->
             val originKey = moveOriginKey
-            if (originKey != null) {
+            run {
                 MoveToCategoryDialog(
                     moveTargets = moveTargets.filterNot { it.id == originKey },
                     originName = moveOriginName ?: stringResource(R.string.settings_customize_this_category),
                     onNewCategory = { creatingCategory = true },
                     onMove = { targetId, keepInOrigin ->
-                        vm.moveToCategory(CustomizeKeys.movie(m), m.id, originKey, targetId, keepInOrigin)
+                        vm.moveToCategory(m.id, originKey, targetId, keepInOrigin)
                         moveItem = null
                     },
                     onDismiss = { moveItem = null },

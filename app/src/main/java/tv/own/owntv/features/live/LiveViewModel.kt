@@ -131,6 +131,7 @@ class LiveViewModel(
     private val epgRepository: tv.own.owntv.core.repository.EpgRepository,
     private val externalPlayerLauncher: tv.own.owntv.core.player.ExternalPlayerLauncher,
     private val recordings: tv.own.owntv.core.recording.RecordingManager,
+    private val groups: tv.own.owntv.core.customize.GroupService,
 ) : ViewModel() {
 
     // --- "Record what I'm watching" (Plan D, D3 mode b) -----------------------------------------
@@ -490,9 +491,10 @@ class LiveViewModel(
 
     /** Creates a custom category (issue #87) — the Move dialog's "＋ New category…" flow. */
     fun createCustomCategory(name: String) {
+        val pid = ctx.value.profileId
+        if (pid < 0) return
         viewModelScope.launch {
-            val pid = currentProfileId() ?: return@launch
-            customize.createCustomCategory(pid, MediaType.LIVE, name)
+            groups.withStableCatalog(changed = true) { customize.createCustomCategory(pid, MediaType.LIVE, name) }
         }
     }
 
@@ -503,18 +505,16 @@ class LiveViewModel(
      * folder is marked in movedFromOrigin — the pager chain then drops it from that folder while
      * keeping it in All / search / recent.
      */
-    fun moveToCategory(itemKey: String, itemId: Long, originKey: String, targetId: String, keepInOrigin: Boolean) {
-        if (targetId == originKey) return
+    fun moveToCategory(itemId: Long, originKey: String?, targetId: String, keepInOrigin: Boolean) {
+        val scope = ctx.value
+        if (scope.profileId < 0) return
         viewModelScope.launch {
-            val pid = currentProfileId() ?: return@launch
-            customCategoryDao.appendItem(pid, MediaType.LIVE, targetId, itemId)
-            if (!keepInOrigin) {
-                when {
-                    originKey == ContentOrderEntity.FAV_CONTEXT -> userDataWriter.removeFavorite(pid, MediaType.LIVE, itemId)
-                    CustomizeKeys.isCustom(originKey) -> userDataWriter.removeCustomCategoryMember(pid, MediaType.LIVE, originKey, itemId)
-                    else -> customize.setItemMovedFromOrigin(pid, MediaType.LIVE, itemKey, originKey, moved = true)
-                }
-            }
+            groups.editFromTv(tv.own.owntv.core.customize.GroupEdit(
+                scope = tv.own.owntv.core.customize.GroupScope(scope.profileId, MediaType.LIVE, scope.sourceIds.toSet()),
+                action = if (keepInOrigin) tv.own.owntv.core.customize.GroupAction.COPY else tv.own.owntv.core.customize.GroupAction.MOVE,
+                itemIds = listOf(itemId), target = targetId, origin = originKey,
+                removeFromFavorites = !keepInOrigin && originKey == ContentOrderEntity.FAV_CONTEXT,
+            ))
         }
     }
 
@@ -620,9 +620,13 @@ class LiveViewModel(
     /** Hide the focused channel from all lists (undo via Settings → Customize → Hidden channels). */
     fun hideChannel(channel: ChannelEntity) {
         if (_previewChannel.value?.id == channel.id) stopPreview()
+        val scope = ctx.value
+        if (scope.profileId < 0) return
         viewModelScope.launch {
-            val pid = currentProfileId() ?: return@launch
-            customize.setItemHidden(pid, MediaType.LIVE, CustomizeKeys.channel(channel), channel.name, true)
+            groups.editFromTv(tv.own.owntv.core.customize.GroupEdit(
+                tv.own.owntv.core.customize.GroupScope(scope.profileId, MediaType.LIVE, scope.sourceIds.toSet()),
+                tv.own.owntv.core.customize.GroupAction.HIDE, listOf(channel.id),
+            ))
         }
     }
 
@@ -1974,13 +1978,13 @@ class LiveViewModel(
     /** Take [channel] out of the custom category [key] only. If it had been moved out of its provider
      *  folder into here, it goes back there — the same as deleting the whole category does. */
     fun removeFromCustomCategory(channel: ChannelEntity, key: LiveKey.Custom) {
+        val scope = ctx.value
         viewModelScope.launch {
-            val pid = currentProfileId() ?: return@launch
-            userDataWriter.removeCustomCategoryMember(pid, MediaType.LIVE, key.id, channel.id)
-            val itemKey = CustomizeKeys.channel(channel)
-            custom.value.movedFromOrigin[itemKey]?.let { origin ->
-                customize.setItemMovedFromOrigin(pid, MediaType.LIVE, itemKey, origin, moved = false)
-            }
+            groups.editFromTv(tv.own.owntv.core.customize.GroupEdit(
+                tv.own.owntv.core.customize.GroupScope(scope.profileId, MediaType.LIVE, scope.sourceIds.toSet()),
+                tv.own.owntv.core.customize.GroupAction.REMOVE, listOf(channel.id), origin = key.id,
+                restoreProviderOnRemove = true,
+            ))
         }
     }
 
