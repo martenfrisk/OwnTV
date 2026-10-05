@@ -32,6 +32,7 @@ fun GroupOperationStatus(modifier: Modifier = Modifier, groups: GroupService = k
                 GroupError.REVISION_CONFLICT -> R.string.group_edit_conflict
                 GroupError.POSITION_OVERFLOW -> R.string.group_edit_limit
                 GroupError.JOURNAL_UNAVAILABLE -> R.string.group_edit_recovery_failed
+                GroupError.INVALID_NAME -> R.string.group_edit_invalid_name
                 else -> R.string.group_edit_invalid_scope
             }
             Toast.makeText(context, context.getString(message), Toast.LENGTH_LONG).show()

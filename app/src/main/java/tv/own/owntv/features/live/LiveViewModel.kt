@@ -46,6 +46,9 @@ import androidx.paging.filter
 import androidx.paging.map
 import tv.own.owntv.core.customize.CustomizationStore
 import tv.own.owntv.core.customize.CustomizeKeys
+import tv.own.owntv.core.customize.GroupDefinitionEdit
+import tv.own.owntv.core.customize.GroupDefinitionAction
+import tv.own.owntv.core.customize.GroupScope
 import tv.own.owntv.features.customize.MoveTarget
 import tv.own.owntv.core.epg.CatchupUrl
 import tv.own.owntv.core.live.StreamGrant
@@ -494,7 +497,7 @@ class LiveViewModel(
         val pid = ctx.value.profileId
         if (pid < 0) return
         viewModelScope.launch {
-            groups.withStableCatalog(changed = true) { customize.createCustomCategory(pid, MediaType.LIVE, name) }
+            groups.editGroupsFromTv(GroupDefinitionEdit(GroupScope(pid, MediaType.LIVE), GroupDefinitionAction.CREATE, name = name))
         }
     }
 
@@ -655,15 +658,20 @@ class LiveViewModel(
 
     /** Hide a category by its rail key (undo via Settings → Customize). */
     fun hideCategory(key: LiveKey) {
+        val c = ctx.value
+        if (c.profileId < 0) return
+        val scope = GroupScope(c.profileId, MediaType.LIVE, c.sourceIds.toSet())
         viewModelScope.launch {
-            categoryEditor.hide(currentProfileId() ?: return@launch, MediaType.LIVE, key)
+            val groupKey = categoryEditor.customizationKey(key) ?: return@launch
+            groups.editGroupsFromTv(GroupDefinitionEdit(scope, GroupDefinitionAction.HIDE, listOf(groupKey)))
         }
     }
 
     fun enterCategoryMoveMode(key: LiveKey) {
         if (key !is LiveKey.Folder && key !is LiveKey.Custom) return
+        val c = ctx.value
+        if (c.profileId < 0) return
         viewModelScope.launch {
-            val c = ctx.first { it.profileId >= 0 }
             _categoryMoveState.value = categoryEditor.beginMove(
                 profileId = c.profileId,
                 sourceIds = c.sourceIds,
@@ -686,8 +694,8 @@ class LiveViewModel(
         val s = _categoryMoveState.value ?: return
         _categoryMoveState.value = null
         viewModelScope.launch {
-            val pid = currentProfileId() ?: return@launch
-            customize.setCategoryOrder(pid, MediaType.LIVE, s.keys)
+            val scope = s.scope ?: return@launch
+            groups.editGroupsFromTv(GroupDefinitionEdit(scope, GroupDefinitionAction.REORDER, s.keys))
         }
     }
 

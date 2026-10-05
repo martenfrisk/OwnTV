@@ -24,6 +24,9 @@ import tv.own.owntv.core.customize.SpanSelector
 import tv.own.owntv.core.customize.moveBlock
 import tv.own.owntv.core.customize.CustomizationStore
 import tv.own.owntv.core.customize.CustomizeKeys
+import tv.own.owntv.core.customize.GroupDefinitionEdit
+import tv.own.owntv.core.customize.GroupDefinitionAction
+import tv.own.owntv.core.customize.GroupScope
 import tv.own.owntv.core.database.dao.CategoryDao
 import tv.own.owntv.core.database.dao.ContentOrderDao
 import tv.own.owntv.core.database.dao.CustomCategoryDao
@@ -268,44 +271,38 @@ class CustomizeViewModel(
         if (pid < 0) return
         val type = _section.value
         viewModelScope.launch {
-            groups.withStableCatalog(changed = true) { customize.createCustomCategory(pid, type, name) }
+            groups.editGroupsFromTv(GroupDefinitionEdit(GroupScope(pid, type), GroupDefinitionAction.CREATE, name = name))
         }
     }
 
-    /**
-     * Deletes a custom combined category (issue #87). Room rows are cleared FIRST (membership +
-     * manual order inside it), then the DataStore definition — so the rail never shows a half-dead
-     * category. The provider items themselves are never touched.
-     */
-    fun deleteCustomCategory(row: CustomizeCatRow) {
-        val pid = ctx.value.profileId
-        if (pid < 0 || !CustomizeKeys.isCustom(row.key)) return
+    private fun definitionScope(): GroupScope? {
+        val c = ctx.value
         val type = _section.value
+        return if (c.profileId < 0) null else GroupScope(c.profileId, type, c.sourceIdsFor(type).toSet())
+    }
+
+    /** Durable deletion retains identities until the definition and membership cleanup finish. */
+    fun deleteCustomCategory(row: CustomizeCatRow) {
+        val scope = definitionScope() ?: return
+        if (!CustomizeKeys.isCustom(row.key)) return
         viewModelScope.launch {
-            groups.withStableCatalog(changed = true) {
-                // Capture stable member keys first so deleting a destination restores any provider
-                // origins those items left when they were moved here.
-                val formerMemberKeys = customCategoryDao.stableItemKeys(pid, row.key).toSet()
-                // 1) Room: drop the category's membership + its content_order rows (the category's own
-                //    rail-order rows ride the same contextKey as the browse screens' reorder).
-                customCategoryDao.clearContext(pid, type, row.key)
-                contentOrderDao.clearContext(pid, type, row.key)
-                // 2) DataStore: remove the definition + any hide/rename pins on it.
-                customize.deleteCustomCategory(pid, type, row.key, formerMemberKeys)
-            }
+            groups.editGroupsFromTv(GroupDefinitionEdit(scope, GroupDefinitionAction.DELETE, listOf(row.key)))
         }
     }
 
     fun setCategoryHidden(row: CustomizeCatRow, hidden: Boolean) {
+        val scope = definitionScope() ?: return
         viewModelScope.launch {
-            customize.setCategoryHidden(ctx.value.profileId, _section.value, row.key, hidden)
+            groups.editGroupsFromTv(GroupDefinitionEdit(scope,
+                if (hidden) GroupDefinitionAction.HIDE else GroupDefinitionAction.UNHIDE, listOf(row.key)))
         }
     }
 
-    /** Blank name restores the provider's original. */
+    /** Blank name restores the original display name. */
     fun renameCategory(row: CustomizeCatRow, name: String?) {
+        val scope = definitionScope() ?: return
         viewModelScope.launch {
-            customize.renameCategory(ctx.value.profileId, _section.value, row.key, name)
+            groups.editGroupsFromTv(GroupDefinitionEdit(scope, GroupDefinitionAction.RENAME, listOf(row.key), name))
         }
     }
 
@@ -318,13 +315,15 @@ class CustomizeViewModel(
         moveSingle(row, if (top) MoveKind.TOP else MoveKind.BOTTOM)
 
     private fun moveSingle(row: CustomizeCatRow, kind: MoveKind) {
+        val scope = definitionScope() ?: return
         viewModelScope.launch {
             moveMutex.withLock {
+                if (definitionScope() != scope) return@withLock
                 val current = rows.value
                 val index = current.indexOfFirst { it.key == row.key }
                 if (index < 0) return@withLock
                 val reordered = moveBlock(current, index, index, kind) ?: return@withLock
-                customize.setCategoryOrder(ctx.value.profileId, _section.value, reordered.map { it.key })
+                groups.editGroupsFromTv(GroupDefinitionEdit(scope, GroupDefinitionAction.REORDER, reordered.map { it.key }))
             }
         }
     }
@@ -345,24 +344,28 @@ class CustomizeViewModel(
 
     fun applyRange(endRow: CustomizeCatRow, hidden: Boolean) {
         val keys = span.keysInRange(endRow) ?: return
+        val scope = definitionScope() ?: return
         viewModelScope.launch {
-            customize.setCategoriesHidden(ctx.value.profileId, _section.value, keys, hidden)
+            groups.editGroupsFromTv(GroupDefinitionEdit(scope,
+                if (hidden) GroupDefinitionAction.HIDE else GroupDefinitionAction.UNHIDE, keys))
         }
         span.cancel()
     }
 
     fun moveRange(endRow: CustomizeCatRow, kind: MoveKind) {
+        val scope = definitionScope() ?: return
         val anchorKey = span.anchorKey.value ?: return
         val endKey = span.endKey.value ?: endRow.key
         viewModelScope.launch {
             moveMutex.withLock {
+                if (definitionScope() != scope) return@withLock
                 val current = rows.value
                 val anchorIndex = current.indexOfFirst { it.key == anchorKey }
                 val endIndex = current.indexOfFirst { it.key == endKey }
                 if (anchorIndex < 0 || endIndex < 0) return@withLock
                 span.setEndKey(endKey)
                 val reordered = moveBlock(current, minOf(anchorIndex, endIndex), maxOf(anchorIndex, endIndex), kind) ?: return@withLock
-                customize.setCategoryOrder(ctx.value.profileId, _section.value, reordered.map { it.key })
+                groups.editGroupsFromTv(GroupDefinitionEdit(scope, GroupDefinitionAction.REORDER, reordered.map { it.key }))
             }
         }
     }
@@ -373,18 +376,12 @@ class CustomizeViewModel(
 
     /**
      * One-shot bulk-rename flow for the current section's category rows. Every accepted rename lands
-     * in ONE [CustomizationStore] write; restore clears only the selected keys' entries.
+     * in one durable command; restore clears only the selected keys' display overrides.
      */
     val bulk = BulkRenameSession(
         scope = viewModelScope,
-        persist = { renames ->
-            val pid = ctx.value.profileId
-            if (pid >= 0) customize.applyBulkRenames(pid, _section.value, renames)
-        },
-        restore = { keys ->
-            val pid = ctx.value.profileId
-            if (pid >= 0) customize.clearCategoryNames(pid, _section.value, keys)
-        },
+        persist = { },
+        restore = { },
         existingNames = { selectedKeys ->
             val pid = ctx.value.profileId
             if (pid < 0) emptySet()
@@ -403,7 +400,23 @@ class CustomizeViewModel(
     fun finishRenameRange(endRow: CustomizeCatRow): List<String>? {
         val keys = span.finishRenameRange(endRow.key) ?: return null
         val byKey = rows.value.associateBy { it.key }
-        bulk.start(keys.mapNotNull { byKey[it]?.let { row -> row.key to row.originalName } })
+        val scope = definitionScope() ?: return null
+        val selectedRows = keys.mapNotNull { byKey[it]?.let { row -> row.key to row.originalName } }
+        val originals = rows.value.filter { it.key !in keys }.map { it.originalName }.toSet()
+        bulk.start(selectedRows,
+            persistOverride = { renames ->
+                groups.editGroupsFromTv(GroupDefinitionEdit(scope, GroupDefinitionAction.RENAME,
+                    renames.keys.toList(), names = renames))
+            },
+            restoreOverride = { selected ->
+                groups.editGroupsFromTv(GroupDefinitionEdit(scope, GroupDefinitionAction.RENAME,
+                    selected.toList(), names = selected.associateWith { null }))
+            },
+            existingNamesOverride = { selected ->
+                customize.observe(scope.profileId, scope.mediaType).first().categoryNames
+                    .filterKeys { it !in selected }.values.toSet() + originals
+            },
+        )
         return keys
     }
 }

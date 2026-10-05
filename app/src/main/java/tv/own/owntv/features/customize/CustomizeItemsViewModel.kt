@@ -41,6 +41,9 @@ import tv.own.owntv.core.customize.SpanSelector
 import tv.own.owntv.core.customize.moveBlock
 import tv.own.owntv.core.customize.CustomizationStore
 import tv.own.owntv.core.customize.CustomizeKeys
+import tv.own.owntv.core.customize.GroupDefinitionEdit
+import tv.own.owntv.core.customize.GroupDefinitionAction
+import tv.own.owntv.core.customize.GroupScope
 import tv.own.owntv.core.model.MediaType
 import tv.own.owntv.core.repository.ActiveProfileSources
 import tv.own.owntv.core.repository.activeProfileSources
@@ -504,7 +507,7 @@ class CustomizeItemsViewModel(
         val ci = _catInfo.value ?: return
         val pid = ctx.value.profileId
         viewModelScope.launch {
-            groups.withStableCatalog(changed = true) { customize.createCustomCategory(pid, ci.mediaType, name) }
+            groups.editGroupsFromTv(GroupDefinitionEdit(GroupScope(pid, ci.mediaType), GroupDefinitionAction.CREATE, name = name))
         }
     }
 

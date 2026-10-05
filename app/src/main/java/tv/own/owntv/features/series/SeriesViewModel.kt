@@ -43,6 +43,9 @@ import tv.own.owntv.core.customize.CategoryRailEditor
 import tv.own.owntv.core.customize.MoveKind
 import tv.own.owntv.core.customize.railCategories
 import tv.own.owntv.core.customize.CustomizeKeys
+import tv.own.owntv.core.customize.GroupDefinitionEdit
+import tv.own.owntv.core.customize.GroupDefinitionAction
+import tv.own.owntv.core.customize.GroupScope
 import tv.own.owntv.core.database.dao.CategoryDao
 import tv.own.owntv.core.database.dao.ContentOrderDao
 import tv.own.owntv.core.database.dao.CustomCategoryDao
@@ -192,7 +195,7 @@ class SeriesViewModel(
         val pid = ctx.value.profileId
         if (pid < 0) return
         viewModelScope.launch {
-            groups.withStableCatalog(changed = true) { customize.createCustomCategory(pid, MediaType.SERIES, name) }
+            groups.editGroupsFromTv(GroupDefinitionEdit(GroupScope(pid, MediaType.SERIES), GroupDefinitionAction.CREATE, name = name))
         }
     }
 
@@ -1148,15 +1151,20 @@ class SeriesViewModel(
 
     /** Hide a category by its rail key (undo via Settings → Customize). */
     fun hideCategory(key: LiveKey) {
+        val c = ctx.value
+        if (c.profileId < 0) return
+        val scope = GroupScope(c.profileId, MediaType.SERIES, c.sourceIds.toSet())
         viewModelScope.launch {
-            categoryEditor.hide(currentProfileId() ?: return@launch, MediaType.SERIES, key)
+            val groupKey = categoryEditor.customizationKey(key) ?: return@launch
+            groups.editGroupsFromTv(GroupDefinitionEdit(scope, GroupDefinitionAction.HIDE, listOf(groupKey)))
         }
     }
 
     fun enterCategoryMoveMode(key: LiveKey) {
         if (key !is LiveKey.Folder && key !is LiveKey.Custom) return
+        val c = ctx.value
+        if (c.profileId < 0) return
         viewModelScope.launch {
-            val c = ctx.first { it.profileId >= 0 }
             _categoryMoveState.value = categoryEditor.beginMove(
                 profileId = c.profileId,
                 sourceIds = c.sourceIds,
@@ -1179,8 +1187,8 @@ class SeriesViewModel(
         val s = _categoryMoveState.value ?: return
         _categoryMoveState.value = null
         viewModelScope.launch {
-            val pid = currentProfileId() ?: return@launch
-            customize.setCategoryOrder(pid, MediaType.SERIES, s.keys)
+            val scope = s.scope ?: return@launch
+            groups.editGroupsFromTv(GroupDefinitionEdit(scope, GroupDefinitionAction.REORDER, s.keys))
         }
     }
 
