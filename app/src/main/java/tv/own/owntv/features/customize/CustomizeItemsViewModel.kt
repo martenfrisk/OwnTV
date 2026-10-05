@@ -44,6 +44,11 @@ import tv.own.owntv.core.customize.CustomizeKeys
 import tv.own.owntv.core.customize.GroupDefinitionEdit
 import tv.own.owntv.core.customize.GroupDefinitionAction
 import tv.own.owntv.core.customize.GroupScope
+import tv.own.owntv.core.customize.GroupAction
+import tv.own.owntv.core.customize.GroupCompositionEdit
+import tv.own.owntv.core.customize.GroupCompositionPart
+import tv.own.owntv.core.customize.GroupDestination
+import tv.own.owntv.core.customize.GroupSelection
 import tv.own.owntv.core.model.MediaType
 import tv.own.owntv.core.repository.ActiveProfileSources
 import tv.own.owntv.core.repository.activeProfileSources
@@ -501,6 +506,22 @@ class CustomizeItemsViewModel(
                 }
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun splitRequest(row: CustomizeItemRow): GroupCompositionEdit? {
+        val ci = _catInfo.value ?: return null
+        val c = ctx.value
+        if (c.profileId < 0) return null
+        val keys = span.keysInRange(row)?.toSet() ?: setOf(row.key)
+        val ids = loadedRows.value.filter { it.key in keys }.map { it.itemId }
+        if (ids.isEmpty()) return null
+        return GroupCompositionEdit(GroupScope(c.profileId, ci.mediaType, c.sourceIdsFor(ci.mediaType).toSet()), GroupAction.MOVE,
+            listOf(GroupCompositionPart(GroupDestination(name = ""), listOf(GroupSelection(ci.contextKey, ids)))))
+    }
+
+    fun submitComposition(edit: GroupCompositionEdit) {
+        viewModelScope.launch { groups.composeFromTv(edit) }
+        span.cancel()
+    }
 
     /** Creates a custom category (issue #87) — the Move dialog's "＋ New category…" flow. */
     fun createCustomCategory(name: String) {

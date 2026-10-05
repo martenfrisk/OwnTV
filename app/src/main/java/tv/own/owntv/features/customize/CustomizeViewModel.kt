@@ -27,6 +27,11 @@ import tv.own.owntv.core.customize.CustomizeKeys
 import tv.own.owntv.core.customize.GroupDefinitionEdit
 import tv.own.owntv.core.customize.GroupDefinitionAction
 import tv.own.owntv.core.customize.GroupScope
+import tv.own.owntv.core.customize.GroupAction
+import tv.own.owntv.core.customize.GroupCompositionEdit
+import tv.own.owntv.core.customize.GroupCompositionPart
+import tv.own.owntv.core.customize.GroupDestination
+import tv.own.owntv.core.customize.GroupSelection
 import tv.own.owntv.core.database.dao.CategoryDao
 import tv.own.owntv.core.database.dao.ContentOrderDao
 import tv.own.owntv.core.database.dao.CustomCategoryDao
@@ -122,12 +127,14 @@ class CustomizeViewModel(
     fun setVisibilityFilter(filter: CustomizeVisibilityFilter) {
         _visibilityFilter.value = filter
         span.cancel()
+        cancelMergeSelection()
     }
 
     fun selectSection(type: MediaType) {
         _section.value = type
         // A pending range belongs to the section it was started in — switching sections cancels it.
         span.cancel()
+        cancelMergeSelection()
     }
 
     /** Categories of the selected section, in their customized order, including hidden ones. */
@@ -280,6 +287,30 @@ class CustomizeViewModel(
         val type = _section.value
         return if (c.profileId < 0) null else GroupScope(c.profileId, type, c.sourceIdsFor(type).toSet())
     }
+
+    private val mergeSelection = GroupMergeSelection()
+    val mergeSelectedKeys = mergeSelection.selectedKeys
+
+    fun cancelMergeSelection() = mergeSelection.cancel()
+
+    fun extendMergeSelection(row: CustomizeCatRow) {
+        mergeSelection.extend(definitionScope(), row.key)
+    }
+
+    fun duplicateRequest(row: CustomizeCatRow): GroupCompositionEdit? {
+        cancelMergeSelection()
+        val scope = definitionScope() ?: return null
+        return GroupCompositionEdit(scope, GroupAction.COPY, listOf(GroupCompositionPart(
+            GroupDestination(name = row.displayName), listOf(GroupSelection(row.key)))))
+    }
+
+    /** First press anchors a range; the second snapshots it for the modal editor. */
+    fun mergeRequest(row: CustomizeCatRow): GroupCompositionEdit? {
+        span.cancel()
+        return mergeSelection.press(definitionScope(), rows.value.map { it.key }, row.key)
+    }
+
+    fun submitComposition(edit: GroupCompositionEdit) { viewModelScope.launch { groups.composeFromTv(edit) } }
 
     /** Durable deletion retains identities until the definition and membership cleanup finish. */
     fun deleteCustomCategory(row: CustomizeCatRow) {

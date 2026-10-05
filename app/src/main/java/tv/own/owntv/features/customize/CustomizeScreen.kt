@@ -76,6 +76,7 @@ import tv.own.owntv.ui.components.trapVerticalFocusExit
 import tv.own.owntv.core.theme.GlassSurface
 import tv.own.owntv.ui.theme.LocalActionSurface
 import tv.own.owntv.ui.theme.OwnTVTheme
+import tv.own.owntv.core.customize.GroupCompositionEdit
 import tv.own.owntv.core.customize.MoveKind
 import tv.own.owntv.core.customize.SpanSelector
 
@@ -98,10 +99,14 @@ fun CustomizeScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
     val rangeMode by vm.rangeMode.collectAsStateWithLifecycle()
     val rangeEndKey by vm.rangeEndKey.collectAsStateWithLifecycle()
     val rangeSelectedKeys by vm.rangeSelectedKeys.collectAsStateWithLifecycle()
+    val mergeSelectedKeys by vm.mergeSelectedKeys.collectAsStateWithLifecycle()
     val pinLock by vm.pinLock.collectAsStateWithLifecycle()
     val selectedCategory by vm.selectedCategory.collectAsStateWithLifecycle()
     val colors = OwnTVTheme.colors
     var renaming by remember { mutableStateOf<CustomizeCatRow?>(null) }
+    var composing by remember { mutableStateOf<GroupCompositionEdit?>(null) }
+    var compositionIsMerge by remember { mutableStateOf(false) }
+    var compositionName by remember { mutableStateOf("") }
     var showNewCatPicker by remember { mutableStateOf(false) }
     var showSortPicker by remember { mutableStateOf(false) }
     var showFilterPicker by remember { mutableStateOf(false) }
@@ -135,7 +140,7 @@ fun CustomizeScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
     // focus doesn't always jump back to the Live TV section chip.
     var dialogReturn by tv.own.owntv.ui.components.rememberDialogFocusRestore(
         anyDialogOpen = showNewCatPicker || showSortPicker || showFilterPicker || showMoreMenu || renaming != null || creatingCategory ||
-            deletingCategory != null || rangeEnd != null || editingPin != null,
+            deletingCategory != null || rangeEnd != null || editingPin != null || composing != null,
     )
 
     // CH+- key paging for the category list (same as Live/Movies/Series browse). The modifier consumes
@@ -218,7 +223,7 @@ fun CustomizeScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
     }
 
     // While a span selection is in progress, Back cancels the selection instead of leaving the screen.
-    BackHandler { if (rangeAnchorKey != null) vm.cancelRange() else if (selectedCategory != null) vm.closeItems() else onBack() }
+    BackHandler { if (mergeSelectedKeys.isNotEmpty()) vm.cancelMergeSelection() else if (rangeAnchorKey != null) vm.cancelRange() else if (selectedCategory != null) vm.closeItems() else onBack() }
 
     // Items screen — shown when the user presses OK on a category name. The items screen covers the
     // full panel including the dialogs, so when it's up, render nothing else.
@@ -357,7 +362,7 @@ fun CustomizeScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
                     itemsIndexed(rows, key = { _, r -> r.key }) { index, row ->
                         val inMoveRange = rangeAnchorKey != null && rangeMode == SpanSelector.Mode.MOVE
                         val inRenameRange = rangeAnchorKey != null && rangeMode == SpanSelector.Mode.RENAME
-                        val isInSpan = row.key in rangeSelectedKeys || renaming?.key == row.key || deletingCategory?.key == row.key
+                        val isInSpan = row.key in rangeSelectedKeys || row.key in mergeSelectedKeys || renaming?.key == row.key || deletingCategory?.key == row.key
                         CategoryRow(
                             row = row,
                             inRangeMode = rangeAnchorKey != null && rangeMode == SpanSelector.Mode.HIDE,
@@ -367,7 +372,7 @@ fun CustomizeScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
                             upFocusRequester = firstFocus.takeIf { index == 0 && hiddenChannels.isEmpty() },
                             actionsFocus = actionsFocus,
                             keepPanel = index == focusedCatIndex,
-                            onRowFocused = { focusedCatIndex = index },
+                            onRowFocused = { focusedCatIndex = index; vm.extendMergeSelection(row) },
                             // While a move span is active every arrow acts on the whole block, not this row.
                             onMoveUp = { if (inMoveRange) vm.moveRange(row, MoveKind.UP) else vm.move(row, up = true) },
                             onMoveDown = { if (inMoveRange) vm.moveRange(row, MoveKind.DOWN) else vm.move(row, up = false) },
@@ -396,6 +401,18 @@ fun CustomizeScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
                                     dialogReturn = rowFocusers[row.key]
                                     rangeEnd = row
                                 }
+                            },
+                            onDuplicate = {
+                                dialogReturn = rowFocusers[row.key]
+                                composing = vm.duplicateRequest(row)
+                                compositionIsMerge = false
+                                compositionName = row.displayName
+                            },
+                            onMerge = {
+                                dialogReturn = rowFocusers[row.key]
+                                composing = vm.mergeRequest(row)
+                                compositionIsMerge = true
+                                compositionName = ""
                             },
                             onOpenItems = { itemsReturnKey = row.key; vm.openItems(row) },
                         )
@@ -524,6 +541,16 @@ fun CustomizeScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
         )
     }
 
+    composing?.let { edit ->
+        GroupCompositionDialog(edit,
+            title = stringResource(if (compositionIsMerge) R.string.group_merge else R.string.group_duplicate),
+            suggestedName = if (compositionIsMerge) "" else stringResource(R.string.group_duplicate_name, compositionName),
+            chooseAction = compositionIsMerge,
+            onConfirm = { vm.submitComposition(it); composing = null },
+            onDismiss = { composing = null },
+        )
+    }
+
     rangeEnd?.let { row ->
         val count = vm.keysInRange(row)?.size ?: 0
         RangeHideDialog(
@@ -631,6 +658,8 @@ private fun CategoryRow(
     onToggleHidden: () -> Unit,
     onHideLongPress: () -> Unit,
     onPickRangeEnd: () -> Unit,
+    onDuplicate: () -> Unit,
+    onMerge: () -> Unit,
     onOpenItems: () -> Unit,
 ) {
     val meta = listOfNotNull(
@@ -640,6 +669,8 @@ private fun CategoryRow(
     ).joinToString(stringResource(R.string.settings_customize_metadata_separator))
     // A held OK on a Move, Rename or Hide action anchors a span; a normal press on a second row picks its end.
     val actions = listOf(
+        StageAction(OwnTVIcon.FOLDER, stringResource(R.string.group_duplicate), onDuplicate),
+        StageAction(OwnTVIcon.FOLDER, stringResource(R.string.group_merge), onMerge),
         StageAction(OwnTVIcon.PAGE_TOWARD_FIRST, stringResource(R.string.settings_customize_move_top), onMoveTop, onMoveLongPress),
         StageAction(OwnTVIcon.CHEVRON_UP, stringResource(R.string.settings_row_menu_move_up), onMoveUp, onMoveLongPress),
         StageAction(OwnTVIcon.CHEVRON_DOWN, stringResource(R.string.settings_row_menu_move_down), onMoveDown, onMoveLongPress),
@@ -664,7 +695,7 @@ private fun CategoryRow(
         keepPanel = keepPanel,
         help = SettingHelp(
             title = row.displayName,
-            text = stringResource(R.string.settings_customize_description),
+            text = stringResource(R.string.settings_customize_description) + "\n" + stringResource(R.string.group_merge_hint),
             hints = listOf(
                 stringResource(R.string.common_ok) to stringResource(R.string.settings_key_open),
                 "▶" to stringResource(R.string.settings_key_actions),

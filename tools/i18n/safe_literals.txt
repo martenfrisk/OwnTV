@@ -41,9 +41,10 @@
 1	performance	app/src/main/java/tv/own/owntv/OwnTVApp.kt	koin-started
 3	empty	app/src/main/java/tv/own/owntv/core/i18n/LocalizedContent.kt	\0
 1	empty	app/src/main/java/tv/own/owntv/features/customize/CustomizeItemsScreen.kt	\0
+1	empty	app/src/main/java/tv/own/owntv/features/customize/CustomizeItemsViewModel.kt	\0
 1	assertion	app/src/main/java/tv/own/owntv/features/customize/CustomizeItemsViewModel.kt	EPISODE not applicable
 2	assertion	app/src/main/java/tv/own/owntv/features/customize/CustomizeItemsViewModel.kt	EPISODE not applicable to category items
-4	empty	app/src/main/java/tv/own/owntv/features/customize/CustomizeScreen.kt	\0
+8	empty	app/src/main/java/tv/own/owntv/features/customize/CustomizeScreen.kt	\0
 3	technical	app/src/main/java/tv/own/owntv/features/customize/CustomizeScreen.kt	HIDE
 2	technical	app/src/main/java/tv/own/owntv/features/customize/CustomizeScreen.kt	NEW
 2	technical	app/src/main/java/tv/own/owntv/features/customize/CustomizeScreen.kt	PIN_CHANGE
@@ -54,6 +55,8 @@
 1	technical	app/src/main/java/tv/own/owntv/features/customize/CustomizeScreen.kt	first
 1	technical	app/src/main/java/tv/own/owntv/features/customize/CustomizeScreen.kt	▶
 1	empty	app/src/main/java/tv/own/owntv/features/customize/CustomizeViewModel.kt	\0
+1	empty	app/src/main/java/tv/own/owntv/features/customize/GroupCompositionDialog.kt	\0
+1	empty	app/src/main/java/tv/own/owntv/features/customize/GroupMergeSelection.kt	\0
 1	technical	app/src/main/java/tv/own/owntv/features/downloads/DownloadsScreen.kt	\0
 1	file-path	app/src/main/java/tv/own/owntv/features/downloads/DownloadsScreen.kt	/
 1	technical	app/src/main/java/tv/own/owntv/features/downloads/DownloadsScreen.kt	content://

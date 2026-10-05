@@ -67,6 +67,7 @@ import tv.own.owntv.ui.components.trapVerticalFocusExit
 import tv.own.owntv.core.theme.GlassSurface
 import tv.own.owntv.ui.theme.LocalActionSurface
 import tv.own.owntv.ui.theme.OwnTVTheme
+import tv.own.owntv.core.customize.GroupCompositionEdit
 import tv.own.owntv.core.customize.MoveKind
 import tv.own.owntv.core.customize.SpanSelector
 
@@ -130,6 +131,7 @@ fun CustomizeItemsScreen(
     // The item the "Move to…" dialog is moving (issue #87); creatingCategory swaps the dialog for the
     // new-category name prompt.
     var movingItem by remember { mutableStateOf<CustomizeItemRow?>(null) }
+    var splitting by remember { mutableStateOf<GroupCompositionEdit?>(null) }
     var creatingCategory by remember { mutableStateOf(false) }
     val backFocus = remember { FocusRequester() }
     val filterFocus = remember { FocusRequester() }
@@ -140,7 +142,7 @@ fun CustomizeItemsScreen(
     // Focus the row that opened a dialog (rename / move) when it closes (a dialog close can land
     // focus on the screen's first focusable otherwise).
     var dialogReturn by tv.own.owntv.ui.components.rememberDialogFocusRestore(
-        anyDialogOpen = showFilterPicker || renaming != null || rangeEnd != null || movingItem != null || creatingCategory,
+        anyDialogOpen = showFilterPicker || renaming != null || rangeEnd != null || movingItem != null || creatingCategory || splitting != null,
     )
     // Focus the first row once the screen opens (rows arrive via paging, so wait for them).
     var firstLanding by remember { mutableStateOf(true) }
@@ -286,6 +288,7 @@ fun CustomizeItemsScreen(
                                     if (vm.finishRenameRange(row) == null) renaming = row
                                 }
                             },
+                            onSplit = { dialogReturn = rowFocusers[row.key]; splitting = vm.splitRequest(row) },
                             onMove = { dialogReturn = rowFocusers[row.key]; movingItem = row },
                             onRemoveFromCategory = if (catInfo?.isCustom == true) ({ vm.removeFromCategory(row) }) else null,
                             onToggleHidden = { vm.setItemHidden(row, !row.hidden) },
@@ -346,6 +349,11 @@ fun CustomizeItemsScreen(
     // Bulk rename (issue #86): choice popup, rule builder, review, restore-confirm, refusal.
     // Its popups restore D-pad focus to the row that opened the flow when the whole flow closes.
     BulkRenameFlow(vm.bulk, returnFocus = dialogReturn)
+
+    splitting?.let { edit ->
+        GroupCompositionDialog(edit, title = stringResource(R.string.group_split), chooseAction = true,
+            onConfirm = { vm.submitComposition(it); splitting = null }, onDismiss = { splitting = null })
+    }
 
     // Move to… (issue #87): pick a combined category; "＋ New category…" swaps this dialog for the
     // name prompt, then the move dialog re-opens with the fresh category listed.
@@ -419,6 +427,7 @@ private fun ItemRow(
     onRenameLongPress: () -> Unit,
     onPickRenameEnd: () -> Unit,
     // "Move to…" (issue #87): send this item into a user's combined category.
+    onSplit: () -> Unit,
     onMove: () -> Unit,
     // Only in a custom category: take the item out of it alone.
     onRemoveFromCategory: (() -> Unit)?,
@@ -439,6 +448,7 @@ private fun ItemRow(
         // Live TV channels get a per-row Rename; Movies/Series rename the whole category from the tool row.
         if (isLive) StageAction(OwnTVIcon.PENCIL, stringResource(R.string.settings_customize_rename), { if (inRenameRange) onPickRenameEnd() else onRename() }, onRenameLongPress) else null,
         StageAction(OwnTVIcon.FOLDER, stringResource(R.string.settings_customize_move_to), onMove),
+        StageAction(OwnTVIcon.FOLDER, stringResource(R.string.group_split), onSplit, onMoveLongPress),
         onRemoveFromCategory?.let { StageAction(OwnTVIcon.CLOSE, stringResource(R.string.content_remove_from_category), it) },
         StageAction(
             OwnTVIcon.EYE_OFF,
